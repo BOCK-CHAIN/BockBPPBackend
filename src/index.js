@@ -7,7 +7,8 @@ const authRoutes = require("./routes/auth");
 const patentsRoutes = require("./routes/patents");
 const inventorsRoutes = require("./routes/inventors");
 const scholarRoutes = require("./routes/scholar");
-const libraryRoutes = require("./routes/library"); // ← new
+const libraryRoutes = require("./routes/library");
+const contributionsRoutes = require("./routes/contributions");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -36,7 +37,8 @@ app.use("/auth", authRoutes);
 app.use("/patents", patentsRoutes);
 app.use("/inventors", inventorsRoutes);
 app.use("/scholar", scholarRoutes);
-app.use("/library", libraryRoutes); // ← new
+app.use("/library", libraryRoutes);
+app.use("/contributions", contributionsRoutes);
 
 app.get("/", (req, res) => res.json({ status: "BPP API running" }));
 app.use((req, res) => res.status(404).json({ error: "Route not found" }));

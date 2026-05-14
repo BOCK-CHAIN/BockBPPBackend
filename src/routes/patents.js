@@ -5,9 +5,14 @@ const { requireAuth, requireOwner } = require("../middleware/session");
 
 const router = express.Router();
 
-async function uploadFile(fileBuffer, mimetype, originalName) {
+async function uploadFile(
+  fileBuffer,
+  mimetype,
+  originalName,
+  folder = "patents",
+) {
   const ext = originalName.split(".").pop();
-  const fileName = `patents/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+  const fileName = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
   const { error } = await supabase.storage
     .from("bpp-files")
     .upload(fileName, fileBuffer, { contentType: mimetype, upsert: false });
@@ -19,9 +24,22 @@ async function uploadFile(fileBuffer, mimetype, originalName) {
 async function resolveFileUrl(body) {
   if (body.file_base64 && body.file_name && body.mime_type) {
     const buffer = Buffer.from(body.file_base64, "base64");
-    return await uploadFile(buffer, body.mime_type, body.file_name);
+    return await uploadFile(buffer, body.mime_type, body.file_name, "patents");
   }
   return body.file_url || null;
+}
+
+async function resolveCoverUrl(body) {
+  if (body.cover_base64 && body.cover_name && body.cover_mime) {
+    const buffer = Buffer.from(body.cover_base64, "base64");
+    return await uploadFile(
+      buffer,
+      body.cover_mime,
+      body.cover_name,
+      "patents/covers",
+    );
+  }
+  return body.cover_url || null;
 }
 
 function parseKeywords(raw) {
@@ -35,9 +53,10 @@ function parseKeywords(raw) {
 
 const PATENT_SELECT = `
   id, title, application_number, status,
-  filing_date, publication_date, assignee,
+  filing_date, publication_date, grant_date, validity_date,
+  assignee, attorneys,
   abstract, technical_field, background, claims, detailed_description,
-  category, keywords, file_url, created_by, created_at, updated_at,
+  category, keywords, file_url, cover_url, created_by, created_at, updated_at,
   patent_inventors ( inventors ( id, name ) ),
   citations_from:citations!citations_patent_id_fkey (
     cited_patent:patents!citations_cited_patent_id_fkey ( id, title, application_number )
@@ -93,7 +112,10 @@ router.post("/", requireAuth, async (req, res) => {
     status = "Draft",
     filing_date,
     publication_date,
+    grant_date,
+    validity_date,
     assignee,
+    attorneys,
     abstract,
     technical_field,
     background,
@@ -108,8 +130,10 @@ router.post("/", requireAuth, async (req, res) => {
   if (!title) return res.status(400).json({ error: "Title is required" });
 
   let file_url = null;
+  let cover_url = null;
   try {
     file_url = await resolveFileUrl(req.body);
+    cover_url = await resolveCoverUrl(req.body);
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
@@ -121,7 +145,10 @@ router.post("/", requireAuth, async (req, res) => {
       status,
       filing_date: filing_date || null,
       publication_date: publication_date || null,
+      grant_date: grant_date || null,
+      validity_date: validity_date || null,
       assignee: assignee || null,
+      attorneys: attorneys || null,
       abstract: abstract || null,
       technical_field: technical_field || null,
       background: background || null,
@@ -130,7 +157,8 @@ router.post("/", requireAuth, async (req, res) => {
       category: category || null,
       keywords: parseKeywords(rawKeywords),
       file_url,
-      created_by: req.user.id, // ← track owner
+      cover_url,
+      created_by: req.user.id,
     })
     .select(PATENT_SELECT)
     .single();
@@ -167,7 +195,7 @@ router.put("/:id", requireAuth, requireOwner("patents"), async (req, res) => {
 
   const { data: existing, error: fetchErr } = await supabase
     .from("patents")
-    .select("id, file_url")
+    .select("id, file_url, cover_url")
     .eq("id", id)
     .single();
 
@@ -180,7 +208,10 @@ router.put("/:id", requireAuth, requireOwner("patents"), async (req, res) => {
     status,
     filing_date,
     publication_date,
+    grant_date,
+    validity_date,
     assignee,
+    attorneys,
     abstract,
     technical_field,
     background,
@@ -193,9 +224,12 @@ router.put("/:id", requireAuth, requireOwner("patents"), async (req, res) => {
   } = req.body;
 
   let file_url = existing.file_url;
+  let cover_url = existing.cover_url;
   try {
-    const resolved = await resolveFileUrl(req.body);
-    if (resolved) file_url = resolved;
+    const resolvedFile = await resolveFileUrl(req.body);
+    if (resolvedFile) file_url = resolvedFile;
+    const resolvedCover = await resolveCoverUrl(req.body);
+    if (resolvedCover) cover_url = resolvedCover;
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
@@ -206,7 +240,11 @@ router.put("/:id", requireAuth, requireOwner("patents"), async (req, res) => {
   if (filing_date !== undefined) updates.filing_date = filing_date || null;
   if (publication_date !== undefined)
     updates.publication_date = publication_date || null;
+  if (grant_date !== undefined) updates.grant_date = grant_date || null;
+  if (validity_date !== undefined)
+    updates.validity_date = validity_date || null;
   if (assignee !== undefined) updates.assignee = assignee || null;
+  if (attorneys !== undefined) updates.attorneys = attorneys || null;
   if (abstract !== undefined) updates.abstract = abstract || null;
   if (technical_field !== undefined)
     updates.technical_field = technical_field || null;
@@ -217,6 +255,7 @@ router.put("/:id", requireAuth, requireOwner("patents"), async (req, res) => {
   if (category !== undefined) updates.category = category || null;
   if (rawKeywords !== undefined) updates.keywords = parseKeywords(rawKeywords);
   updates.file_url = file_url;
+  updates.cover_url = cover_url;
 
   const { data: patent, error } = await supabase
     .from("patents")

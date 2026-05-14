@@ -5,9 +5,14 @@ const { requireAuth, requireOwner } = require("../middleware/session");
 
 const router = express.Router();
 
-async function uploadFile(fileBuffer, mimetype, originalName) {
+async function uploadFile(
+  fileBuffer,
+  mimetype,
+  originalName,
+  folder = "scholar",
+) {
   const ext = originalName.split(".").pop();
-  const fileName = `scholar/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+  const fileName = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
   const { error } = await supabase.storage
     .from("bpp-files")
     .upload(fileName, fileBuffer, { contentType: mimetype, upsert: false });
@@ -19,9 +24,22 @@ async function uploadFile(fileBuffer, mimetype, originalName) {
 async function resolveFileUrl(body) {
   if (body.file_base64 && body.file_name && body.mime_type) {
     const buffer = Buffer.from(body.file_base64, "base64");
-    return await uploadFile(buffer, body.mime_type, body.file_name);
+    return await uploadFile(buffer, body.mime_type, body.file_name, "scholar");
   }
   return body.file_url || null;
+}
+
+async function resolveCoverUrl(body) {
+  if (body.cover_base64 && body.cover_name && body.cover_mime) {
+    const buffer = Buffer.from(body.cover_base64, "base64");
+    return await uploadFile(
+      buffer,
+      body.cover_mime,
+      body.cover_name,
+      "scholar/covers",
+    );
+  }
+  return body.cover_url || null;
 }
 
 function parseArray(raw) {
@@ -37,8 +55,8 @@ const SCHOLAR_SELECT = `
   id, title, abstract, year, status,
   authors, venue, venue_type, volume, issue, pages,
   doi, issn, isbn, keywords,
-  institution, department, advisor, degree,
-  file_url, created_by, created_at, updated_at,
+  org_name, org_department, org_location, org_website,
+  file_url, cover_url, created_by, created_at, updated_at,
   references_made:scholar_references!scholar_references_paper_id_fkey (
     cited_paper:scholar!scholar_references_cited_paper_id_fkey ( id, title, year, authors )
   ),
@@ -105,10 +123,10 @@ router.post("/", requireAuth, async (req, res) => {
     issn,
     isbn,
     keywords: rawKeywords,
-    institution,
-    department,
-    advisor,
-    degree,
+    org_name,
+    org_department,
+    org_location,
+    org_website,
     cited_paper_ids = [],
   } = req.body;
 
@@ -120,8 +138,10 @@ router.post("/", requireAuth, async (req, res) => {
   }
 
   let file_url = null;
+  let cover_url = null;
   try {
     file_url = await resolveFileUrl(req.body);
+    cover_url = await resolveCoverUrl(req.body);
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
@@ -143,12 +163,13 @@ router.post("/", requireAuth, async (req, res) => {
       issn: issn || null,
       isbn: isbn || null,
       keywords: parseArray(rawKeywords),
-      institution: institution || null,
-      department: department || null,
-      advisor: advisor || null,
-      degree: degree || null,
+      org_name: org_name || null,
+      org_department: org_department || null,
+      org_location: org_location || null,
+      org_website: org_website || null,
       file_url,
-      created_by: req.user.id, // ← track owner
+      cover_url,
+      created_by: req.user.id,
     })
     .select(SCHOLAR_SELECT)
     .single();
@@ -176,7 +197,7 @@ router.put("/:id", requireAuth, requireOwner("scholar"), async (req, res) => {
 
   const { data: existing, error: fetchErr } = await supabase
     .from("scholar")
-    .select("id, file_url")
+    .select("id, file_url, cover_url")
     .eq("id", id)
     .single();
 
@@ -199,17 +220,20 @@ router.put("/:id", requireAuth, requireOwner("scholar"), async (req, res) => {
     issn,
     isbn,
     keywords: rawKeywords,
-    institution,
-    department,
-    advisor,
-    degree,
+    org_name,
+    org_department,
+    org_location,
+    org_website,
     cited_paper_ids,
   } = req.body;
 
   let file_url = existing.file_url;
+  let cover_url = existing.cover_url;
   try {
-    const resolved = await resolveFileUrl(req.body);
-    if (resolved) file_url = resolved;
+    const resolvedFile = await resolveFileUrl(req.body);
+    if (resolvedFile) file_url = resolvedFile;
+    const resolvedCover = await resolveCoverUrl(req.body);
+    if (resolvedCover) cover_url = resolvedCover;
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
@@ -229,11 +253,13 @@ router.put("/:id", requireAuth, requireOwner("scholar"), async (req, res) => {
   if (issn !== undefined) updates.issn = issn || null;
   if (isbn !== undefined) updates.isbn = isbn || null;
   if (rawKeywords !== undefined) updates.keywords = parseArray(rawKeywords);
-  if (institution !== undefined) updates.institution = institution || null;
-  if (department !== undefined) updates.department = department || null;
-  if (advisor !== undefined) updates.advisor = advisor || null;
-  if (degree !== undefined) updates.degree = degree || null;
+  if (org_name !== undefined) updates.org_name = org_name || null;
+  if (org_department !== undefined)
+    updates.org_department = org_department || null;
+  if (org_location !== undefined) updates.org_location = org_location || null;
+  if (org_website !== undefined) updates.org_website = org_website || null;
   updates.file_url = file_url;
+  updates.cover_url = cover_url;
 
   const { data: paper, error } = await supabase
     .from("scholar")
@@ -250,11 +276,12 @@ router.put("/:id", requireAuth, requireOwner("scholar"), async (req, res) => {
   if (Array.isArray(cited_paper_ids)) {
     await supabase.from("scholar_references").delete().eq("paper_id", id);
     if (cited_paper_ids.length > 0) {
-      await supabase
-        .from("scholar_references")
-        .insert(
-          cited_paper_ids.map((cid) => ({ paper_id: id, cited_paper_id: cid })),
-        );
+      await supabase.from("scholar_references").insert(
+        cited_paper_ids.map((cid) => ({
+          paper_id: id,
+          cited_paper_id: cid,
+        })),
+      );
     }
   }
 

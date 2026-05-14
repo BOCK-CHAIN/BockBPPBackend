@@ -3,6 +3,7 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const supabase = require("../config/supabase");
+const { requireAuth } = require("../middleware/session");
 
 const router = express.Router();
 
@@ -23,7 +24,6 @@ router.post("/register", async (req, res) => {
     return res.status(400).json({ error: "All fields are required" });
   }
 
-  // Check email uniqueness
   const { data: existing } = await supabase
     .from("users")
     .select("id")
@@ -36,7 +36,6 @@ router.post("/register", async (req, res) => {
 
   const password_hash = await bcrypt.hash(password, 10);
 
-  // Insert — no role column, everyone is equal
   const { data: user, error } = await supabase
     .from("users")
     .insert({
@@ -111,6 +110,35 @@ router.post("/logout", async (req, res) => {
     return res.status(400).json({ error: "No session ID provided" });
   await supabase.from("sessions").delete().eq("id", sessionId);
   return res.status(200).json({ message: "Logged out successfully" });
+});
+
+// DELETE /auth/account — delete the logged-in user's account
+router.delete("/account", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+
+  // 1. Delete all sessions for this user
+  const { error: sessionError } = await supabase
+    .from("sessions")
+    .delete()
+    .eq("user_id", userId);
+
+  if (sessionError) {
+    console.error("Delete sessions error:", sessionError);
+    return res.status(500).json({ error: "Failed to delete account" });
+  }
+
+  // 2. Delete the user
+  const { error: userError } = await supabase
+    .from("users")
+    .delete()
+    .eq("id", userId);
+
+  if (userError) {
+    console.error("Delete user error:", userError);
+    return res.status(500).json({ error: "Failed to delete account" });
+  }
+
+  return res.status(200).json({ message: "Account deleted successfully" });
 });
 
 module.exports = router;
